@@ -8,7 +8,16 @@ import {
 } from "./errors.js";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
+import { migrate } from "drizzle-orm/postgres-js/migrator";import {
+  createUser,
+  deleteUsers,
+} from "./db/queries/users.js";
+import {
+  createChirp,
+  getAllChirps,
+  getChirpById,
+} from "./db/queries/chirps.js";
+
 
 
 const migrationClient = postgres(config.db.url, {
@@ -37,7 +46,11 @@ app.use(
 
 app.get("/admin/metrics", handlerMetrics);
 app.post("/admin/reset", handlerReset);
-app.post("/api/validate_chirp", handlerValidateChirp);
+
+app.post("/api/users", handlerCreateUser);
+app.post("/api/chirps", handlerCreateChirp);
+app.get("/api/chirps", handlerGetChirps);
+app.get("/api/chirps/:chirpId", handlerGetChirp);
 app.use(errorHandler);
 
 app.listen(PORT, () => {
@@ -90,7 +103,15 @@ function handlerMetrics(_req: Request, res: Response): void {
   `);
 }
 
-function handlerReset(_req: Request, res: Response): void {
+async function handlerReset(
+  _req: Request,
+  res: Response
+): Promise<void> {
+  if (config.api.platform !== "dev") {
+    throw new ForbiddenError("Forbidden");
+  }
+
+  await deleteUsers();
   config.api.fileserverHits = 0;
 
   res.set("Content-Type", "text/plain; charset=utf-8");
@@ -101,32 +122,42 @@ type ValidateChirpParams = {
   body: string;
 };
 
-async function handlerValidateChirp(
+
+type CreateChirpParams = {
+  body: string;
+  userId: string;
+};
+
+async function handlerCreateChirp(
   req: Request,
   res: Response
 ): Promise<void> {
-  const params = req.body as ValidateChirpParams;
+  const params = req.body as CreateChirpParams;
 
-  if (typeof params.body !== "string") {
-    res.status(400).json({
-      error: "Something went wrong",
-    });
-    return;
+  if (
+    typeof params.body !== "string" ||
+    typeof params.userId !== "string"
+  ) {
+    throw new BadRequestError("Invalid request body");
   }
 
   if (params.body.length > 140) {
-  throw new BadRequestError(
-  "Chirp is too long. Max length is 140"
-);
-
+    throw new BadRequestError(
+      "Chirp is too long. Max length is 140"
+    );
   }
 
   const cleanedBody = cleanChirp(params.body);
 
-  res.status(200).json({
-     cleanedBody,
+  const chirp = await createChirp({
+    body: cleanedBody,
+    userId: params.userId,
   });
+
+  res.status(201).json(chirp);``
 }
+
+
 
 function cleanChirp(body: string): string {
   const profaneWords = ["kerfuffle", "sharbert", "fornax"];
@@ -184,4 +215,45 @@ function errorHandler(
   res.status(500).json({
     error: "Something went wrong on our end",
   });
+}
+
+type CreateUserParams = {
+  email: string;
+};
+
+async function handlerCreateUser(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const params = req.body as CreateUserParams;
+
+  const user = await createUser({
+    email: params.email,
+  });
+
+  res.status(201).json(user);
+}
+
+async function handlerGetChirps(
+  _req: Request,
+  res: Response
+): Promise<void> {
+  const chirps = await getAllChirps();
+
+  res.status(200).json(chirps);
+}
+
+async function handlerGetChirp(
+  req: Request<{ chirpId: string }>,
+  res: Response
+): Promise<void> {
+  const chirpId = req.params.chirpId;
+
+  const chirp = await getChirpById(chirpId);
+
+  if (!chirp) {
+    throw new NotFoundError("Chirp not found");
+  }
+
+  res.status(200).json(chirp);
 }

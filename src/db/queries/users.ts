@@ -10,3 +10,7 @@ export async function createUser(user: NewUser) {
 
   return result;
 }
+
+export async function deleteUsers(): Promise<void> {
+  await db.delete(users);
+}

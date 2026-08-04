@@ -1,22 +1,54 @@
+import express, {
+  NextFunction,
+  Request,
+  Response,
+} from "express";
+
+import postgres from "postgres";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
+
 import { config } from "./config.js";
-import express, { NextFunction, Request, Response } from "express";
+
 import {
   BadRequestError,
   ForbiddenError,
   NotFoundError,
   UnauthorizedError,
 } from "./errors.js";
-import postgres from "postgres";
-import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";import {
+
+import {
+  checkPasswordHash,
+  getBearerToken,
+  hashPassword,
+  makeJWT,
+  makeRefreshToken,
+  validateJWT,
+} from "./auth.js";
+
+import {
+  createRefreshToken,
+  getUserFromRefreshToken,
+  revokeRefreshToken,
+} from "./db/queries/refreshTokens.js";
+
+import {
   createUser,
   deleteUsers,
+  getUserByEmail,
 } from "./db/queries/users.js";
+
 import {
   createChirp,
   getAllChirps,
   getChirpById,
 } from "./db/queries/chirps.js";
+
+import type { UserResponse } from "./db/schema.js";
+
+
+
+
 
 
 
@@ -51,6 +83,9 @@ app.post("/api/users", handlerCreateUser);
 app.post("/api/chirps", handlerCreateChirp);
 app.get("/api/chirps", handlerGetChirps);
 app.get("/api/chirps/:chirpId", handlerGetChirp);
+app.post("/api/login", handlerLogin);
+app.post("/api/refresh", handlerRefresh);
+app.post("/api/revoke", handlerRevoke);
 app.use(errorHandler);
 
 app.listen(PORT, () => {
@@ -125,7 +160,6 @@ type ValidateChirpParams = {
 
 type CreateChirpParams = {
   body: string;
-  userId: string;
 };
 
 async function handlerCreateChirp(
@@ -134,11 +168,21 @@ async function handlerCreateChirp(
 ): Promise<void> {
   const params = req.body as CreateChirpParams;
 
-  if (
-    typeof params.body !== "string" ||
-    typeof params.userId !== "string"
-  ) {
+  if (typeof params.body !== "string") {
     throw new BadRequestError("Invalid request body");
+  }
+
+  let userId: string;
+
+  try {
+    const token = getBearerToken(req);
+
+    userId = validateJWT(
+      token,
+      config.api.jwtSecret
+    );
+  } catch {
+    throw new UnauthorizedError("Invalid token");
   }
 
   if (params.body.length > 140) {
@@ -151,10 +195,10 @@ async function handlerCreateChirp(
 
   const chirp = await createChirp({
     body: cleanedBody,
-    userId: params.userId,
+    userId,
   });
 
-  res.status(201).json(chirp);``
+  res.status(201).json(chirp);
 }
 
 
@@ -219,6 +263,12 @@ function errorHandler(
 
 type CreateUserParams = {
   email: string;
+  password: string;
+};
+
+type LoginParams = {
+  email: string;
+  password: string;
 };
 
 async function handlerCreateUser(
@@ -227,11 +277,32 @@ async function handlerCreateUser(
 ): Promise<void> {
   const params = req.body as CreateUserParams;
 
+  if (
+    typeof params.email !== "string" ||
+    typeof params.password !== "string"
+  ) {
+    throw new BadRequestError("Invalid request body");
+  }
+
+  const hashedPassword = await hashPassword(params.password);
+
   const user = await createUser({
     email: params.email,
+    hashedPassword,
   });
 
-  res.status(201).json(user);
+  if (!user) {
+    throw new BadRequestError("User could not be created");
+  }
+
+  const response: UserResponse = {
+    id: user.id,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    email: user.email,
+  };
+
+  res.status(201).json(response);
 }
 
 async function handlerGetChirps(
@@ -256,4 +327,129 @@ async function handlerGetChirp(
   }
 
   res.status(200).json(chirp);
+}
+
+async function handlerLogin(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const params = req.body as LoginParams;
+
+  if (
+    typeof params.email !== "string" ||
+    typeof params.password !== "string"
+  ) {
+    throw new UnauthorizedError(
+      "Incorrect email or password"
+    );
+  }
+
+  const user = await getUserByEmail(params.email);
+
+  if (!user) {
+    throw new UnauthorizedError(
+      "Incorrect email or password"
+    );
+  }
+
+  let passwordsMatch: boolean;
+
+  try {
+    passwordsMatch = await checkPasswordHash(
+      params.password,
+      user.hashedPassword
+    );
+  } catch {
+    throw new UnauthorizedError(
+      "Incorrect email or password"
+    );
+  }
+
+  if (!passwordsMatch) {
+    throw new UnauthorizedError(
+      "Incorrect email or password"
+    );
+  }
+
+  const accessToken = makeJWT(
+  user.id,
+  60 * 60,
+  config.api.jwtSecret
+);
+
+const refreshToken = makeRefreshToken();
+
+const refreshTokenExpiresAt = new Date(
+  Date.now() + 60 * 24 * 60 * 60 * 1000
+);
+
+await createRefreshToken({
+  token: refreshToken,
+  userId: user.id,
+  expiresAt: refreshTokenExpiresAt,
+});
+
+const response: UserResponse & {
+  token: string;
+  refreshToken: string;
+} = {
+  id: user.id,
+  createdAt: user.createdAt,
+  updatedAt: user.updatedAt,
+  email: user.email,
+  token: accessToken,
+  refreshToken,
+};
+
+res.status(200).json(response);
+}
+
+
+async function handlerRefresh(
+  req: Request,
+  res: Response
+): Promise<void> {
+  let refreshToken: string;
+
+  try {
+    refreshToken = getBearerToken(req);
+  } catch {
+    throw new UnauthorizedError("Invalid refresh token");
+  }
+
+  const user = await getUserFromRefreshToken(
+    refreshToken
+  );
+
+  if (!user) {
+    throw new UnauthorizedError("Invalid refresh token");
+  }
+
+  const accessToken = makeJWT(
+    user.id,
+    60 * 60,
+    config.api.jwtSecret
+  );
+
+  res.status(200).json({
+    token: accessToken,
+  });
+}
+
+
+async function handlerRevoke(
+  req: Request,
+  res: Response
+): Promise<void> {
+  let refreshToken: string;
+
+  try {
+    refreshToken = getBearerToken(req);
+  } catch {
+    throw new UnauthorizedError("Invalid refresh token");
+  }
+
+  await revokeRefreshToken(refreshToken);
+
+  res.status(204).send();
 }

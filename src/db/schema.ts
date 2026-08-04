@@ -21,9 +21,38 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 256 })
     .unique()
     .notNull(),
+  hashedPassword: varchar("hashed_password", { length: 256 })
+  .notNull()
+  .default("unset"),
+});
+
+export const refreshTokens = pgTable("refresh_tokens", {
+  token: varchar("token", { length: 64 }).primaryKey(),
+
+  createdAt: timestamp("created_at")
+    .notNull()
+    .defaultNow(),
+
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, {
+      onDelete: "cascade",
+    }),
+
+  expiresAt: timestamp("expires_at").notNull(),
+
+  revokedAt: timestamp("revoked_at"),
 });
 
 export type NewUser = typeof users.$inferInsert;
+export type User = typeof users.$inferSelect;
+
+export type UserResponse = Omit<User, "hashedPassword">;
 
 export const chirps = pgTable("chirps", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -47,3 +76,9 @@ export const chirps = pgTable("chirps", {
 });
 
 export type NewChirp = typeof chirps.$inferInsert;
+
+export type NewRefreshToken =
+  typeof refreshTokens.$inferInsert;
+
+export type RefreshToken =
+  typeof refreshTokens.$inferSelect;

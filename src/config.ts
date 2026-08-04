@@ -5,6 +5,7 @@ process.loadEnvFile();
 export type APIConfig = {
   fileserverHits: number;
   platform: string;
+  jwtSecret: string;
 };
 
 export type DBConfig = {
@@ -19,15 +20,15 @@ export type Config = {
 
 export const config: Config = {
   api: {
-  fileserverHits: 0,
-  platform: envOrThrow("PLATFORM"),
-},
+    fileserverHits: 0,
+    platform: envOrThrow("PLATFORM"),
+    jwtSecret: envOrThrow("JWT_SECRET"),
+  },
   db: {
     url: envOrThrow("DB_URL"),
     migrationConfig: {
       migrationsFolder: "./src/db/migrations",
     },
-
   },
 };
 

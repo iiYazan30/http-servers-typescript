@@ -19,6 +19,7 @@ import {
 
 import {
   checkPasswordHash,
+  getAPIKey,
   getBearerToken,
   hashPassword,
   makeJWT,
@@ -36,10 +37,13 @@ import {
   createUser,
   deleteUsers,
   getUserByEmail,
+  updateUser,
+  upgradeUserToChirpyRed,
 } from "./db/queries/users.js";
 
 import {
   createChirp,
+  deleteChirpById,
   getAllChirps,
   getChirpById,
 } from "./db/queries/chirps.js";
@@ -86,6 +90,15 @@ app.get("/api/chirps/:chirpId", handlerGetChirp);
 app.post("/api/login", handlerLogin);
 app.post("/api/refresh", handlerRefresh);
 app.post("/api/revoke", handlerRevoke);
+app.put("/api/users", handlerUpdateUser);
+app.delete(
+  "/api/chirps/:chirpId",
+  handlerDeleteChirp
+);
+app.post(
+  "/api/polka/webhooks",
+  handlerPolkaWebhook
+);
 app.use(errorHandler);
 
 app.listen(PORT, () => {
@@ -271,6 +284,18 @@ type LoginParams = {
   password: string;
 };
 
+type UpdateUserParams = {
+  email: string;
+  password: string;
+};
+
+type PolkaWebhookParams = {
+  event: string;
+  data: {
+    userId: string;
+  };
+};
+
 async function handlerCreateUser(
   req: Request,
   res: Response
@@ -295,12 +320,13 @@ async function handlerCreateUser(
     throw new BadRequestError("User could not be created");
   }
 
-  const response: UserResponse = {
-    id: user.id,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    email: user.email,
-  };
+ const response: UserResponse = {
+  id: user.id,
+  createdAt: user.createdAt,
+  updatedAt: user.updatedAt,
+  email: user.email,
+  isChirpyRed: user.isChirpyRed,
+};
 
   res.status(201).json(response);
 }
@@ -397,6 +423,7 @@ const response: UserResponse & {
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
   email: user.email,
+  isChirpyRed: user.isChirpyRed,
   token: accessToken,
   refreshToken,
 };
@@ -450,6 +477,121 @@ async function handlerRevoke(
   }
 
   await revokeRefreshToken(refreshToken);
+
+  res.status(204).send();
+}
+
+
+async function handlerUpdateUser(
+  req: Request,
+  res: Response
+): Promise<void> {
+  let userId: string;
+
+  try {
+    const token = getBearerToken(req);
+
+    userId = validateJWT(
+      token,
+      config.api.jwtSecret
+    );
+  } catch {
+    throw new UnauthorizedError("Invalid token");
+  }
+
+  const params = req.body as UpdateUserParams;
+
+  if (
+    typeof params.email !== "string" ||
+    typeof params.password !== "string"
+  ) {
+    throw new BadRequestError("Invalid request body");
+  }
+
+  const hashedPassword = await hashPassword(
+    params.password
+  );
+
+  const updatedUser = await updateUser(
+    userId,
+    params.email,
+    hashedPassword
+  );
+
+  if (!updatedUser) {
+    throw new UnauthorizedError("Invalid token");
+  }
+
+  res.status(200).json(updatedUser);
+}
+
+
+async function handlerDeleteChirp(
+  req: Request<{ chirpId: string }>,
+  res: Response
+): Promise<void> {
+  let userId: string;
+
+  try {
+    const token = getBearerToken(req);
+
+    userId = validateJWT(
+      token,
+      config.api.jwtSecret
+    );
+  } catch {
+    throw new UnauthorizedError("Invalid token");
+  }
+
+  const chirpId = req.params.chirpId;
+
+  const chirp = await getChirpById(chirpId);
+
+  if (!chirp) {
+    throw new NotFoundError("Chirp not found");
+  }
+
+  if (chirp.userId !== userId) {
+    throw new ForbiddenError(
+      "You are not allowed to delete this chirp"
+    );
+  }
+
+  await deleteChirpById(chirpId);
+
+  res.status(204).send();
+}
+
+async function handlerPolkaWebhook(
+  req: Request,
+  res: Response
+): Promise<void> {
+  let apiKey: string;
+
+  try {
+    apiKey = getAPIKey(req);
+  } catch {
+    throw new UnauthorizedError("Invalid API key");
+  }
+
+  if (apiKey !== config.api.polkaKey) {
+    throw new UnauthorizedError("Invalid API key");
+  }
+
+  const params = req.body as PolkaWebhookParams;
+
+  if (params.event !== "user.upgraded") {
+    res.status(204).send();
+    return;
+  }
+
+  const user = await upgradeUserToChirpyRed(
+    params.data.userId
+  );
+
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
 
   res.status(204).send();
 }

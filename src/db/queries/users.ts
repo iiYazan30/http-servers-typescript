@@ -25,3 +25,49 @@ export async function getUserByEmail(email: string) {
 export async function deleteUsers(): Promise<void> {
   await db.delete(users);
 }
+
+
+export async function updateUser(
+  userId: string,
+  email: string,
+  hashedPassword: string
+) {
+  const [result] = await db
+    .update(users)
+    .set({
+      email,
+      hashedPassword,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, userId))
+    .returning({
+      id: users.id,
+      createdAt: users.createdAt,
+      updatedAt: users.updatedAt,
+      email: users.email,
+      isChirpyRed: users.isChirpyRed,
+    });
+
+  return result;
+}
+
+export async function upgradeUserToChirpyRed(
+  userId: string
+) {
+  const [result] = await db
+    .update(users)
+    .set({
+      isChirpyRed: true,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, userId))
+    .returning({
+      id: users.id,
+      createdAt: users.createdAt,
+      updatedAt: users.updatedAt,
+      email: users.email,
+      isChirpyRed: users.isChirpyRed,
+    });
+
+  return result;
+}

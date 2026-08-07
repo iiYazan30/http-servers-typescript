@@ -332,10 +332,31 @@ async function handlerCreateUser(
 }
 
 async function handlerGetChirps(
-  _req: Request,
+  req: Request,
   res: Response
 ): Promise<void> {
-  const chirps = await getAllChirps();
+  const authorIdQuery = req.query.authorId;
+  const sortQuery = req.query.sort;
+
+  let authorId: string | undefined;
+
+  if (typeof authorIdQuery === "string") {
+    authorId = authorIdQuery;
+  }
+
+  const chirps = await getAllChirps(authorId);
+
+  if (sortQuery === "desc") {
+    chirps.sort(
+      (a, b) =>
+        b.createdAt.getTime() - a.createdAt.getTime()
+    );
+  } else {
+    chirps.sort(
+      (a, b) =>
+        a.createdAt.getTime() - b.createdAt.getTime()
+    );
+  }
 
   res.status(200).json(chirps);
 }
